@@ -1669,7 +1669,8 @@ void JOIN_CACHE::get_record_by_pos(uchar *rec_ptr)
 enum JOIN_CACHE::Match_flag JOIN_CACHE::get_match_flag_by_pos(uchar *rec_ptr)
 {
   Match_flag match_fl= MATCH_NOT_FOUND;
-  if (with_match_flag)
+  if (with_match_flag &&
+      (!join_tab->first_unmatched || join_tab == join_tab->first_unmatched))
   {
     match_fl= (enum Match_flag) rec_ptr[0];
     return match_fl;
@@ -2221,7 +2222,10 @@ enum_nested_loop_state JOIN_CACHE::join_matching_records(bool skip_last)
   int error;
   enum_nested_loop_state rc= NESTED_LOOP_OK;
   join_tab->table->null_row= 0;
-  bool check_only_first_match= join_tab->check_only_first_match();
+  bool check_only_first_match=
+    join_tab->check_only_first_match() &&
+    (!join_tab->first_inner ||                            // semi-join case
+     join_tab->first_inner == join_tab->first_unmatched); // outer join case
   bool outer_join_first_inner= join_tab->is_first_inner_for_outer_join();
   DBUG_ENTER("JOIN_CACHE::join_matching_records");
 
