@@ -187,6 +187,8 @@ aio *create_linux_aio(thread_pool *pool, int max_io)
   }
   return new aio_linux(ctx, pool);
 }
+#elif defined(HAVE_URING)
+// handled somewhere else
 #else
 aio *create_linux_aio(thread_pool*, int) { return nullptr; }
 #endif
