@@ -467,9 +467,8 @@ CREATE DEFINER='root'@'localhost' FUNCTION format_path (
     NO SQL
 BEGIN
   DECLARE v_path VARCHAR(512);
-  DECLARE v_undo_dir VARCHAR(1024);
-  DECLARE v_innodb_data_home_dir VARCHAR(1024);
-  DECLARE v_innodb_log_group_home_dir VARCHAR(1024);
+  DECLARE v_dir VARCHAR(1024);
+  DECLARE v_prefix VARCHAR(20);
 
   DECLARE path_separator CHAR(1) DEFAULT '/';
 
@@ -485,25 +484,56 @@ BEGIN
   END IF;
 
   -- @@global.innodb_undo_directory is only set when separate undo logs are used
-  SET v_undo_dir = IFNULL((SELECT VARIABLE_VALUE FROM information_schema.global_variables WHERE VARIABLE_NAME = 'innodb_undo_directory'), '');
-  SET v_innodb_data_home_dir= IFNULL((SELECT VARIABLE_VALUE FROM information_schema.global_variables WHERE VARIABLE_NAME = 'innodb_data_home_dir'), '');
-  SET v_innodb_log_group_home_dir= IFNULL((SELECT VARIABLE_VALUE FROM information_schema.global_variables WHERE VARIABLE_NAME = 'innodb_log_group_home_dir'), '');
   IF v_path IS NULL THEN
     RETURN NULL;
-  ELSEIF v_path LIKE CONCAT(@@global.datadir, IF(SUBSTRING(@@global.datadir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
-    SET v_path = REPLACE(v_path, @@global.datadir, CONCAT('@@datadir', IF(SUBSTRING(@@global.datadir, -1) = path_separator, path_separator, '')));
-  ELSEIF v_path LIKE CONCAT(@@global.tmpdir, IF(SUBSTRING(@@global.tmpdir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
-    SET v_path = REPLACE(v_path, @@global.tmpdir, CONCAT('@@tmpdir', IF(SUBSTRING(@@global.tmpdir, -1) = path_separator, path_separator, '')));
-  ELSEIF v_path LIKE CONCAT(@@global.slave_load_tmpdir, IF(SUBSTRING(@@global.slave_load_tmpdir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
-    SET v_path = REPLACE(v_path, @@global.slave_load_tmpdir, CONCAT('@@slave_load_tmpdir', IF(SUBSTRING(@@global.slave_load_tmpdir, -1) = path_separator, path_separator, '')));
-  ELSEIF v_path LIKE CONCAT(v_innodb_data_home_dir, IF(SUBSTRING(v_innodb_data_home_dir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
-    SET v_path = REPLACE(v_path, v_innodb_data_home_dir, CONCAT('@@innodb_data_home_dir', IF(SUBSTRING(v_innodb_data_home_dir, -1) = path_separator, path_separator, '')));
-  ELSEIF v_path LIKE CONCAT(v_innodb_log_group_home_dir, IF(SUBSTRING(v_innodb_log_group_home_dir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
-    SET v_path = REPLACE(v_path, v_innodb_log_group_home_dir, CONCAT('@@innodb_log_group_home_dir', IF(SUBSTRING(v_innodb_log_group_home_dir, -1) = path_separator, path_separator, '')));
-  ELSEIF v_path LIKE CONCAT(v_undo_dir, IF(SUBSTRING(v_undo_dir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
-    SET v_path = REPLACE(v_path, v_undo_dir, CONCAT('@@innodb_undo_directory', IF(SUBSTRING(v_undo_dir, -1) = path_separator, path_separator, '')));
-  ELSEIF v_path LIKE CONCAT(@@global.basedir, IF(SUBSTRING(@@global.basedir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
-    SET v_path = REPLACE(v_path, @@global.basedir, CONCAT('@@basedir', IF(SUBSTRING(@@global.basedir, -1) = path_separator, path_separator, '')));
+  END IF;
+
+  SET v_dir=@@global.datadir;
+  SET v_prefix='@@datadir';
+  IF v_path LIKE CONCAT(v_dir, IF(SUBSTRING(v_dir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
+    SET v_path = REPLACE(v_path, v_dir, CONCAT(v_prefix, IF(SUBSTRING(v_path, -1) = path_separator, path_separator, '')));
+  END IF;
+
+  
+  SET v_dir=@@global.datadir;
+  SET v_prefix='@@datadir';
+  IF v_path LIKE CONCAT(v_dir, IF(SUBSTRING(v_dir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
+    SET v_path = REPLACE(v_path, v_dir, CONCAT(v_prefix, IF(SUBSTRING(v_path, -1) = path_separator, path_separator, '')));
+  END IF;
+
+  SET v_dir = IFNULL((SELECT VARIABLE_VALUE FROM information_schema.global_variables WHERE VARIABLE_NAME = 'innodb_data_home_dir'), '');
+  SET v_prefix='@@innodb_data_home_dir';
+  IF v_path LIKE CONCAT(v_dir, IF(SUBSTRING(v_dir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
+    SET v_path = REPLACE(v_path, v_dir, CONCAT(v_prefix, IF(SUBSTRING(v_path, -1) = path_separator, path_separator, '')));
+    RETURN v_path;
+  END IF;
+
+  SET v_prefix = '@@innodb_undo_directory';
+  SET v_dir = IFNULL((SELECT VARIABLE_VALUE FROM information_schema.global_variables WHERE VARIABLE_NAME = 'innodb_undo_directory'), '');
+  IF v_path LIKE CONCAT(v_dir, IF(SUBSTRING(v_dir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
+    SET v_path = REPLACE(v_path, v_dir, CONCAT(v_prefix, IF(SUBSTRING(v_path, -1) = path_separator, path_separator, '')));
+    RETURN v_path;
+  END IF;
+
+  SET v_dir = IFNULL((SELECT VARIABLE_VALUE FROM information_schema.global_variables WHERE VARIABLE_NAME = 'innodb_log_home_dir'), '');
+  SET v_prefix = '@@innodb_log_home_dir';
+  IF v_path LIKE CONCAT(v_dir, IF(SUBSTRING(v_dir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
+    SET v_path = REPLACE(v_path, v_dir, CONCAT(v_prefix, IF(SUBSTRING(v_dir, -1) = path_separator, path_separator, '')));
+    RETURN v_path;
+  END IF;
+
+  SET v_dir = IFNULL((SELECT VARIABLE_VALUE FROM information_schema.global_variables WHERE VARIABLE_NAME = 'slave_load_tmpdir'), '');
+  SET v_prefix = '@@slave_load_tmpdir';
+  IF v_path LIKE CONCAT(v_dir, IF(SUBSTRING(v_dir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
+    SET v_path = REPLACE(v_path, v_dir, CONCAT(v_prefix, IF(SUBSTRING(v_dir, -1) = path_separator, path_separator, '')));
+    RETURN v_path;
+  END IF;
+
+  SET v_dir = @@global.basedir;
+  SET v_prefix = '@@basedir';
+  IF v_path LIKE CONCAT(v_dir, IF(SUBSTRING(v_dir, -1) = path_separator, '%', CONCAT(path_separator, '%'))) ESCAPE '|' THEN
+    SET v_path = REPLACE(v_path, v_dir, CONCAT(v_prefix, IF(SUBSTRING(v_dir, -1) = path_separator, path_separator, '')));
+    RETURN v_path;
   END IF;
 
   RETURN v_path;
