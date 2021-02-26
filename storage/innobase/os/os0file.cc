@@ -4028,7 +4028,8 @@ disable:
   if (ret)
   {
     ut_ad(srv_use_native_aio);
-    ib::warn() << "liburing disabled.";
+    ib::warn()
+	    << "liburing disabled: falling back to innodb_use_native_aio=OFF";
     srv_use_native_aio= false;
     ret= srv_thread_pool->configure_aio(false, max_events);
   }

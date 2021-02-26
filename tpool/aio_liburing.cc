@@ -16,7 +16,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111 - 1301 USA*/
 #include "tpool_structs.h"
 #include "tpool.h"
 
-#ifdef HAVE_URING
 #include <liburing.h>
 
 #include <algorithm>
@@ -164,5 +163,3 @@ aio *create_linux_aio(thread_pool *pool, int max_aio)
 }
 
 } // namespace tpool
-
-#endif
