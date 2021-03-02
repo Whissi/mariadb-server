@@ -1815,19 +1815,7 @@ dberr_t lock_wait(que_thr_t *thr)
 end_wait:
   if (lock_t *lock= trx->lock.wait_lock)
   {
-    if (lock_sys.rd_lock_try())
-    cancel:
-      lock_sys_t::cancel(trx, lock);
-    else
-    {
-      mysql_mutex_unlock(&lock_sys.wait_mutex);
-      lock_sys.rd_lock(SRW_LOCK_CALL);
-      mysql_mutex_lock(&lock_sys.wait_mutex);
-      lock= trx->lock.wait_lock;
-      if (lock)
-        goto cancel;
-    }
-    lock_sys.rd_unlock();
+    lock_sys_t::cancel(trx, lock, false);
     lock_sys.deadlock_check();
   }
 
@@ -5414,68 +5402,82 @@ static void lock_cancel_waiting_and_release(lock_t *lock)
 
 /** Cancel a waiting lock request.
 @param lock   waiting lock request
-@param trx    active transaction */
-void lock_sys_t::cancel(trx_t *trx, lock_t *lock)
+@param trx    active transaction
+@param check_victim  whether to check trx->was_chosen_as_deadlock_victim
+@retval DB_SUCCESS    if no lock existed
+@retval DB_DEADLOCK   if trx->was_chosen_as_deadlock_victim was already set
+@retval DB_LOCK_WAIT  if the lock was canceled */
+dberr_t lock_sys_t::cancel(trx_t *trx, lock_t *lock, bool check_victim)
 {
   mysql_mutex_assert_owner(&lock_sys.wait_mutex);
   ut_ad(trx->lock.wait_lock == lock);
   ut_ad(trx->state == TRX_STATE_ACTIVE);
+  dberr_t err= DB_SUCCESS;
 
   if (lock->is_table())
   {
-    dict_table_t *table= lock->un_member.tab_lock.table;
-    table->lock_mutex_lock();
-    if (lock->is_waiting())
-      lock_cancel_waiting_and_release(lock);
-    table->lock_mutex_unlock();
+    if (!lock_sys.rd_lock_try())
+    {
+      mysql_mutex_unlock(&lock_sys.wait_mutex);
+      lock_sys.rd_lock(SRW_LOCK_CALL);
+      mysql_mutex_lock(&lock_sys.wait_mutex);
+      lock= trx->lock.wait_lock;
+      if (!lock);
+      else if (check_victim && trx->lock.was_chosen_as_deadlock_victim)
+        err= DB_DEADLOCK;
+      else
+        goto resolve_table_lock;
+    }
+    else
+    {
+resolve_table_lock:
+      dict_table_t *table= lock->un_member.tab_lock.table;
+      table->lock_mutex_lock();
+      if (lock->is_waiting())
+        lock_cancel_waiting_and_release(lock);
+      table->lock_mutex_unlock();
+      err= DB_LOCK_WAIT;
+    }
+    lock_sys.rd_unlock();
   }
   else
   {
-    auto latch= lock_sys_t::hash_table::latch
-      (lock_sys.hash_get(lock->type_mode).cell_get
-       (lock->un_member.rec_lock.page_id.fold()));
-    latch->acquire();
-    if (lock->is_waiting())
-      lock_cancel_waiting_and_release(lock);
-    latch->release();
+    /* To prevent the record lock from being moved between pages
+    during a page split or merge, we must hold exclusive lock_sys.latch. */
+    if (!lock_sys.wr_lock_try())
+    {
+      mysql_mutex_unlock(&lock_sys.wait_mutex);
+      lock_sys.wr_lock(SRW_LOCK_CALL);
+      mysql_mutex_lock(&lock_sys.wait_mutex);
+      lock= trx->lock.wait_lock;
+      if (!lock);
+      else if (check_victim && trx->lock.was_chosen_as_deadlock_victim)
+        err= DB_DEADLOCK;
+      else
+        goto resolve_record_lock;
+    }
+    else
+    {
+resolve_record_lock:
+      if (lock->is_waiting())
+        lock_cancel_waiting_and_release(lock);
+      err= DB_LOCK_WAIT;
+    }
+    lock_sys.wr_unlock();
   }
+
+  return err;
 }
 
 /** Cancel a waiting lock request (if any) when killing a transaction */
 void lock_sys_t::cancel(trx_t *trx)
 {
-#ifdef HAVE_REPLICATION /* Work around MDEV-25016 (FIXME: remove this!) */
-  /* Parallel replication tests would occasionally hang if we did not
-  acquire exclusive lock_sys.latch here. This is not a real fix, but a
-  work-around!
-
-  It would be nice if thd_need_wait_reports() did not hold when no
-  parallel replication is in use, and only the binlog is enabled. */
-
-  if (innodb_deadlock_detect && thd_need_wait_reports(trx->mysql_thd))
-  {
-    lock_sys.wr_lock(SRW_LOCK_CALL);
-    mysql_mutex_lock(&lock_sys.wait_mutex);
-    if (lock_t *lock= trx->lock.wait_lock)
-    {
-      trx->error_state= DB_INTERRUPTED;
-      cancel(trx, lock);
-    }
-    lock_sys.wr_unlock();
-    goto func_exit;
-  }
-#endif
-  lock_sys.rd_lock(SRW_LOCK_CALL);
   mysql_mutex_lock(&lock_sys.wait_mutex);
   if (lock_t *lock= trx->lock.wait_lock)
   {
     trx->error_state= DB_INTERRUPTED;
-    cancel(trx, lock);
+    cancel(trx, lock, false);
   }
-  lock_sys.rd_unlock();
-#ifdef HAVE_REPLICATION
-func_exit:
-#endif
   lock_sys.deadlock_check();
   mysql_mutex_unlock(&lock_sys.wait_mutex);
 }
@@ -5530,28 +5532,7 @@ dberr_t lock_trx_handle_wait(trx_t *trx)
   if (trx->lock.was_chosen_as_deadlock_victim)
     err= DB_DEADLOCK;
   else if (lock_t *wait_lock= trx->lock.wait_lock)
-  {
-    if (!lock_sys.rd_lock_try())
-    {
-      mysql_mutex_unlock(&lock_sys.wait_mutex);
-      lock_sys.rd_lock(SRW_LOCK_CALL);
-      mysql_mutex_lock(&lock_sys.wait_mutex);
-
-      if (trx->lock.was_chosen_as_deadlock_victim)
-      {
-        err= DB_DEADLOCK;
-        goto release;
-      }
-      wait_lock= trx->lock.wait_lock;
-      if (!wait_lock)
-        goto release;
-    }
-
-    err= DB_LOCK_WAIT;
-    lock_sys_t::cancel(trx, wait_lock);
-release:
-    lock_sys.rd_unlock();
-  }
+    err= lock_sys_t::cancel(trx, wait_lock, true);
   lock_sys.deadlock_check();
   mysql_mutex_unlock(&lock_sys.wait_mutex);
   return err;
@@ -5954,20 +5935,7 @@ static bool Deadlock::check_and_resolve(trx_t *trx)
     return false;
 
   if (lock_t *wait_lock= trx->lock.wait_lock)
-  {
-    if (!lock_sys.rd_lock_try())
-    {
-      mysql_mutex_unlock(&lock_sys.wait_mutex);
-      lock_sys.rd_lock(SRW_LOCK_CALL);
-      mysql_mutex_lock(&lock_sys.wait_mutex);
-      wait_lock= trx->lock.wait_lock;
-      if (!wait_lock)
-        goto resolved;
-    }
-    lock_sys_t::cancel(trx, wait_lock);
-resolved:
-    lock_sys.rd_unlock();
-  }
+    lock_sys_t::cancel(trx, wait_lock, false);
 
   lock_sys.deadlock_check();
   return true;
